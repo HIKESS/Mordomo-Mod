@@ -8,6 +8,12 @@
 --   4. 自动生成 Warly（auto 模式：首日主机旁）
 --   5. 客户端热键打开命令菜单（Follow / Cook Here / Stop）
 
+-- ── 全局环境引用 ────────────────────────────────────────────
+-- 在 DST mod 沙箱中，游戏全局（STRINGS / Ents / AllPlayers 等）必须
+-- 通过 GLOBAL 访问，否则在 modmain 加载阶段会得到 nil。
+-- 参考 HIKESS/Mods 3684000581 (NPC Friend) modmain.lua 的同款写法。
+local _G = GLOBAL
+
 local MordomoCommands = require("mordomo/commands")
 local TUNING_MOD      = require("mordomo/tuning")
 
@@ -40,8 +46,16 @@ Assets = {
 }
 
 -- 字符串（简单本地化）
-STRINGS.NAMES.MORDOMO_WARLY = "Warly"
-STRINGS.CHARACTERS.GENERIC.DESCRIBE.MORDOMO_WARLY = "Um chefe de cozinha dedicado."
+-- 注意：在 mod 沙箱中 STRINGS 必须通过 GLOBAL 访问，并且需要
+-- 防御性地创建中间表，避免某些加载时机下 STRINGS.NAMES / CHARACTERS 尚未初始化。
+_G.STRINGS                          = _G.STRINGS                          or {}
+_G.STRINGS.NAMES                    = _G.STRINGS.NAMES                    or {}
+_G.STRINGS.NAMES.MORDOMO_WARLY      = _G.STRINGS.NAMES.MORDOMO_WARLY      or "Warly"
+_G.STRINGS.CHARACTERS               = _G.STRINGS.CHARACTERS               or {}
+_G.STRINGS.CHARACTERS.GENERIC       = _G.STRINGS.CHARACTERS.GENERIC       or {}
+_G.STRINGS.CHARACTERS.GENERIC.DESCRIBE = _G.STRINGS.CHARACTERS.GENERIC.DESCRIBE or {}
+_G.STRINGS.CHARACTERS.GENERIC.DESCRIBE.MORDOMO_WARLY =
+    _G.STRINGS.CHARACTERS.GENERIC.DESCRIBE.MORDOMO_WARLY or "Um chefe de cozinha dedicado."
 
 -- ════════════════════════════════════════════════════════════
 --  服务端：RPC 处理器
@@ -55,7 +69,7 @@ end)
 --  服务端：自动生成 Warly（auto 模式）
 -- ════════════════════════════════════════════════════════════
 local function FindExistingWarly()
-    for _, e in pairs(Ents) do
+    for _, e in pairs(_G.Ents) do
         if e:IsValid() and e.prefab == "mordomo_warly" then
             return e
         end
@@ -68,11 +82,11 @@ local function SpawnWarlyNear(target)
     local x, _, z = target.Transform:GetWorldPosition()
     -- 尝试在玩家附近找可通行点
     local spawn_x, spawn_z = x + 2, z + 2
-    local map = TheWorld.Map
+    local map = _G.TheWorld.Map
     if map and not map:IsPassableAtPoint(spawn_x, 0, spawn_z) then
         spawn_x, spawn_z = x - 2, z - 2
     end
-    local warly = SpawnPrefab("mordomo_warly")
+    local warly = _G.SpawnPrefab("mordomo_warly")
     if not warly then return nil end
     warly.Transform:SetPosition(spawn_x, 0, spawn_z)
     warly._owner_userid = target.userid
@@ -80,7 +94,7 @@ local function SpawnWarlyNear(target)
         warly.owner_userid:set(target.userid or "")
     end
     if warly.components.knownlocations then
-        warly.components.knownlocations:RememberLocation("home", Vector3(spawn_x, 0, spawn_z))
+        warly.components.knownlocations:RememberLocation("home", _G.Vector3(spawn_x, 0, spawn_z))
     end
     if DEBUG_MODE then
         print("[Mordomo] Warly spawned near", target.name or target.userid)
@@ -89,13 +103,13 @@ local function SpawnWarlyNear(target)
 end
 
 AddPrefabPostInit("world", function(inst)
-    if not TheWorld.ismastersim then return end
+    if not _G.TheWorld.ismastersim then return end
     inst:DoTaskInTime(5, function()
         if SPAWN_MODE ~= "auto" then return end
         if FindExistingWarly() then return end
         -- 优先找主机玩家
         local target = nil
-        for _, p in pairs(AllPlayers) do
+        for _, p in pairs(_G.AllPlayers) do
             if p and p:IsValid() then
                 target = p
                 break
@@ -128,14 +142,14 @@ local HOTKEY = KEY_MAP[HOTKEY_STR] or GLOBAL.KEY_M
 
 AddPlayerPostInit(function(inst)
     -- 仅本地玩家注册热键
-    if inst ~= ThePlayer then return end
+    if inst ~= _G.ThePlayer then return end
     if inst._mordomo_hotkey_added then return end
     inst._mordomo_hotkey_added = true
     inst:DoTaskInTime(1, function()
-        if not TheInput then return end
-        TheInput:AddKeyUpHandler(HOTKEY, function()
+        if not _G.TheInput then return end
+        _G.TheInput:AddKeyUpHandler(HOTKEY, function()
             -- 避免在非游戏界面（如选人、暂停）打开
-            local active = TheFrontEnd:GetActiveScreen()
+            local active = _G.TheFrontEnd:GetActiveScreen()
             if not active then return end
             local name = active.name or ""
             -- 仅在主游戏界面打开
@@ -143,7 +157,7 @@ AddPlayerPostInit(function(inst)
             -- 避免重复打开
             if name:find("MordomoMenu") then return end
             if MordomoMenu then
-                TheFrontEnd:PushScreen(MordomoMenu(inst))
+                _G.TheFrontEnd:PushScreen(MordomoMenu(inst))
             end
         end)
     end)
@@ -152,16 +166,16 @@ end)
 -- ════════════════════════════════════════════════════════════
 --  控制台命令（手动模式备用）
 -- ════════════════════════════════════════════════════════════
-if GLOBAL and GLOBAL.rawset then
+if _G and _G.rawset then
     -- c_spawn_warly() ：在本地玩家旁生成 Warly
-    GLOBAL.rawset(GLOBAL, "c_spawn_warly", function()
-        if not TheWorld.ismastersim then
+    _G.rawset(_G, "c_spawn_warly", function()
+        if not _G.TheWorld.ismastersim then
             print("[Mordomo] c_spawn_warly 只能在服务端使用")
             return
         end
-        local target = ThePlayer or nil
+        local target = _G.ThePlayer or nil
         if not target then
-            for _, p in pairs(AllPlayers) do
+            for _, p in pairs(_G.AllPlayers) do
                 if p and p:IsValid() then target = p break end
             end
         end
@@ -173,10 +187,10 @@ if GLOBAL and GLOBAL.rawset then
     end)
 
     -- c_mordomo_despawn() ：移除所有 Warly
-    GLOBAL.rawset(GLOBAL, "c_mordomo_despawn", function()
-        if not TheWorld.ismastersim then return end
+    _G.rawset(_G, "c_mordomo_despawn", function()
+        if not _G.TheWorld.ismastersim then return end
         local count = 0
-        for _, e in pairs(Ents) do
+        for _, e in pairs(_G.Ents) do
             if e:IsValid() and e.prefab == "mordomo_warly" then
                 e:Remove()
                 count = count + 1
